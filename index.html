@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Puerto Rico - Households Without a Vehicle (ACS 2024)</title>
+  <link rel="stylesheet" href="https://js.arcgis.com/4.29/esri/themes/light/main.css" />
+  <script src="https://js.arcgis.com/4.29/"></script>
+  <style>
+    html, body, #viewDiv {
+      padding: 0;
+      margin: 0;
+      height: 100%;
+      width: 100%;
+    }
+  </style>
+</head>
+<body>
+<div id="viewDiv"></div>
+
+<script>
+require([
+  "esri/Map",
+  "esri/views/MapView",
+  "esri/layers/FeatureLayer",
+  "esri/Graphic",
+  "esri/widgets/Legend"
+], function(Map, MapView, FeatureLayer, Graphic, Legend) {
+
+  fetch("prvehicles.json")
+    .then(res => res.json())
+    .then(data => {
+      console.log("Local ACS JSON loaded:", data.length, "tracts");
+
+      const tractData = {};
+      let minVal = Infinity;
+      let maxVal = -Infinity;
+
+      // Build lookup table from JSON
+      data.forEach(row => {
+        const geoid = row.Geography.slice(-11); // last 11 digits
+        const ownerNoVeh = parseInt(row.TotalOwnerOccupiedNoVehicle, 10) || 0;
+        const renterNoVeh = parseInt(row.TotalRenterOccupiedNoVehicle, 10) || 0;
+        const totalNoVeh = ownerNoVeh + renterNoVeh;
+        tractData[geoid] = totalNoVeh;
+
+        if (totalNoVeh < minVal) minVal = totalNoVeh;
+        if (totalNoVeh > maxVal) maxVal = totalNoVeh;
+      });
+
+      console.log(`Dynamic scale: min=${minVal}, max=${maxVal}`);
+
+      // Get Puerto Rico tract geometries
+      const tigerLayer = new FeatureLayer({
+        url: "https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/Tracts_Blocks/MapServer/2",
+        definitionExpression: "STATE='72'",
+        outFields: ["GEOID", "STATE", "COUNTY", "TRACT"]
+      });
+
+      tigerLayer.queryFeatures({
+        where: "STATE='72'",
+        outFields: ["GEOID", "STATE", "COUNTY", "TRACT"],
+        returnGeometry: true
+      }).then(featureSet => {
+        console.log("TIGERweb features loaded:", featureSet.features.length);
+
+        // Attach raw counts to each tract
+        featureSet.features.forEach((f, i) => {
+          const geoid = String(f.attributes.GEOID).padStart(11, "0");
+          f.attributes.no_vehicle_count = tractData[geoid] || 0;
+          f.attributes.ObjectID = i + 1;
+        });
+
+        // Create client-side FeatureLayer
+        const enrichedLayer = new FeatureLayer({
+          source: featureSet.features.map(f => new Graphic({
+            geometry: f.geometry,
+            attributes: f.attributes
+          })),
+          fields: [
+            { name: "ObjectID", type: "oid" },
+            { name: "GEOID", type: "string" },
+            { name: "no_vehicle_count", type: "integer" }
+          ],
+          objectIdField: "ObjectID",
+          geometryType: "polygon",
+          spatialReference: { wkid: 4326 },
+          renderer: {
+            type: "simple",
+            symbol: { type: "simple-fill", outline: { color: "white", width: 0.5 } },
+            visualVariables: [{
+              type: "color",
+              field: "no_vehicle_count",
+              legendOptions: { title: "Households Without a Vehicle" },
+              stops: [
+                { value: minVal, color: "#f7fbff", label: `${minVal} (Lowest)` },
+                { value: maxVal, color: "#08306b", label: `${maxVal} (Highest)` }
+              ]
+            }]
+          },
+          popupTemplate: {
+            title: "Census Tract {GEOID}",
+            content: "{no_vehicle_count} households have no vehicle available"
+          }
+        });
+
+        // Map and view
+        const map = new Map({
+          basemap: "gray-vector",
+          layers: [enrichedLayer]
+        });
+
+        const view = new MapView({
+          container: "viewDiv",
+          map: map,
+          center: [-66.5, 18.2],
+          zoom: 9
+        });
+
+        // Legend
+        const legend = new Legend({
+          view: view,
+          layerInfos: [{ layer: enrichedLayer, title: "Households Without a Vehicle (ACS 2024)" }]
+        });
+        view.ui.add(legend, "bottom-left");
+      });
+    })
+    .catch(err => console.error("Error loading local JSON:", err));
+
+});
+</script>
+</body>
+</html>
