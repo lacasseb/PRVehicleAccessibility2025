@@ -13,6 +13,13 @@
       height: 100%;
       width: 100%;
     }
+    /* Compact horizontal legend styling */
+    .esri-legend {
+      font-size: 11px;
+      padding: 4px;
+      background: rgba(255, 255, 255, 0.85);
+      border-radius: 4px;
+    }
   </style>
 </head>
 <body>
@@ -38,7 +45,6 @@ require([
 
       // Build lookup table from JSON
       data.forEach(row => {
-        // Remove "1400000US" prefix to get GEOID
         const geoid = row.Geography.replace("1400000US", ""); // e.g., "72001956300"
         const ownerNoVeh = parseInt(row.TotalOwnerOccupiedNoVehicle, 10) || 0;
         const renterNoVeh = parseInt(row.TotalRenterOccupiedNoVehicle, 10) || 0;
@@ -56,41 +62,39 @@ require([
       const tigerLayer = new FeatureLayer({
         url: "https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/Tracts_Blocks/MapServer/2",
         definitionExpression: "STATE='72'",
-        outFields: ["GEOID", "STATE", "COUNTY", "TRACT"]
+        outFields: ["STATE", "COUNTY", "TRACT"]
       });
 
       tigerLayer.queryFeatures({
         where: "STATE='72'",
-        outFields: ["GEOID", "STATE", "COUNTY", "TRACT"],
+        outFields: ["STATE", "COUNTY", "TRACT"],
         returnGeometry: true
       }).then(featureSet => {
         console.log("TIGERweb features loaded:", featureSet.features.length);
 
-        let unmatchedCount = 0;
+        // Filter out 0-value tracts and build graphics
+        const filteredGraphics = featureSet.features
+          .map(f => {
+            const tractStr = String(f.attributes.TRACT).replace(".", "").padStart(6, "0");
+            const geoid = f.attributes.STATE + f.attributes.COUNTY + tractStr;
+            const count = tractData[geoid] || 0;
+            return { geoid, count, geometry: f.geometry };
+          })
+          .filter(item => item.count > 0) // remove 0-value tracts
+          .map((item, i) => new Graphic({
+            geometry: item.geometry,
+            attributes: {
+              ObjectID: i + 1,
+              GEOID: item.geoid,
+              no_vehicle_count: item.count
+            }
+          }));
 
-        // Attach raw counts to each tract
-        featureSet.features.forEach((f, i) => {
-          // Build GEOID from STATE + COUNTY + TRACT (remove decimal, pad to 6 chars)
-          const tractStr = String(f.attributes.TRACT).replace(".", "").padStart(6, "0");
-          const geoid = f.attributes.STATE + f.attributes.COUNTY + tractStr;
-
-          if (!tractData.hasOwnProperty(geoid)) {
-            unmatchedCount++;
-            console.warn("No match for TIGERweb GEOID:", geoid);
-          }
-
-          f.attributes.no_vehicle_count = tractData[geoid] || 0;
-          f.attributes.ObjectID = i + 1;
-        });
-
-        console.log(`Unmatched TIGERweb tracts: ${unmatchedCount}`);
+        console.log(`Filtered tracts count: ${filteredGraphics.length}`);
 
         // Create client-side FeatureLayer
         const enrichedLayer = new FeatureLayer({
-          source: featureSet.features.map(f => new Graphic({
-            geometry: f.geometry,
-            attributes: f.attributes
-          })),
+          source: filteredGraphics,
           fields: [
             { name: "ObjectID", type: "oid" },
             { name: "GEOID", type: "string" },
@@ -131,12 +135,13 @@ require([
           zoom: 9
         });
 
-        // Legend
+        // Compact horizontal legend
         const legend = new Legend({
           view: view,
-          layerInfos: [{ layer: enrichedLayer, title: "Households Without a Vehicle (ACS 2024)" }]
+          layerInfos: [{ layer: enrichedLayer, title: "" }],
+          style: "card" // compact style
         });
-        view.ui.add(legend, "bottom-left");
+        view.ui.add(legend, { position: "top-right" });
       });
     })
     .catch(err => console.error("Error loading local JSON:", err));
