@@ -38,10 +38,12 @@ require([
 
       // Build lookup table from JSON
       data.forEach(row => {
-        const geoid = row.Geography.slice(-11); // last 11 digits
+        // Remove "1400000US" prefix to get GEOID
+        const geoid = row.Geography.replace("1400000US", ""); // e.g., "72001956300"
         const ownerNoVeh = parseInt(row.TotalOwnerOccupiedNoVehicle, 10) || 0;
         const renterNoVeh = parseInt(row.TotalRenterOccupiedNoVehicle, 10) || 0;
         const totalNoVeh = ownerNoVeh + renterNoVeh;
+
         tractData[geoid] = totalNoVeh;
 
         if (totalNoVeh < minVal) minVal = totalNoVeh;
@@ -64,12 +66,24 @@ require([
       }).then(featureSet => {
         console.log("TIGERweb features loaded:", featureSet.features.length);
 
+        let unmatchedCount = 0;
+
         // Attach raw counts to each tract
         featureSet.features.forEach((f, i) => {
-          const geoid = String(f.attributes.GEOID).padStart(11, "0");
+          // Build GEOID from STATE + COUNTY + TRACT (remove decimal, pad to 6 chars)
+          const tractStr = String(f.attributes.TRACT).replace(".", "").padStart(6, "0");
+          const geoid = f.attributes.STATE + f.attributes.COUNTY + tractStr;
+
+          if (!tractData.hasOwnProperty(geoid)) {
+            unmatchedCount++;
+            console.warn("No match for TIGERweb GEOID:", geoid);
+          }
+
           f.attributes.no_vehicle_count = tractData[geoid] || 0;
           f.attributes.ObjectID = i + 1;
         });
+
+        console.log(`Unmatched TIGERweb tracts: ${unmatchedCount}`);
 
         // Create client-side FeatureLayer
         const enrichedLayer = new FeatureLayer({
